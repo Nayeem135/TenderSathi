@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, health
+from app.api import auth, health, tenders
 from app.api.errors import register_error_handlers
 from app.core.config import settings
 
@@ -19,3 +19,4 @@ register_error_handlers(app)
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(tenders.router)

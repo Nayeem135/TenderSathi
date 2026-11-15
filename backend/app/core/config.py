@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = Field(default=60, gt=0)
 
+    # Uploaded tender PDFs. A relative upload_dir is resolved against backend/.
+    upload_dir: str = "uploads"
+    max_upload_size_mb: int = Field(default=20, gt=0)
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

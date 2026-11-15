@@ -73,6 +73,19 @@ def list_things(current_user: CurrentUser):
 
 `current_user: User = Depends(get_current_user)` from the same module is equivalent.
 
+## Tenders
+
+Both need the bearer token and are scoped to the caller's firm.
+
+| Endpoint | Body | Success |
+| --- | --- | --- |
+| `POST /api/tenders` | multipart form: `file` (PDF), optional `title` | `201` tender |
+| `GET /api/tenders` | — | `200` list, newest first |
+
+A non-PDF returns `415` and a file over `MAX_UPLOAD_SIZE_MB` (default 20) returns `413`,
+both with `errors.file`. If `title` is omitted, the file name is used. Files are stored
+under `backend/uploads/` (gitignored).
+
 ## Common tasks
 
 ```
