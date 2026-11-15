@@ -12,15 +12,14 @@ conditions come from sample_conditions.json, so the demo runs offline.
 import json
 from dataclasses import dataclass
 from decimal import Decimal
-from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ValidationError, field_validator
 from sqlalchemy.orm import Session
 
+from app.ai import gemini
 from app.ai.pdf_reader import PageText, read_pdf
-from app.core.config import settings
 from app.models import Condition, Tender
 from app.services import tender_storage
 
@@ -152,31 +151,12 @@ def load_sample_conditions() -> list[ExtractedCondition]:
     ).conditions
 
 
-@lru_cache
-def _client():
-    from google import genai
-
-    return genai.Client(api_key=settings.gemini_api_key)
-
-
 def _generate_json(section_text: str) -> str:
     """One Gemini call for one section; returns the raw JSON reply."""
     try:
-        interaction = _client().interactions.create(
-            model=settings.gemini_model,
-            system_instruction=_SYSTEM_INSTRUCTION,
-            input=section_text,
-            response_format={
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": _RESPONSE_SCHEMA,
-            },
-        )
-    except Exception as exc:
-        raise ExtractionError(f"Gemini request failed: {exc}") from exc
-    if interaction.status != "completed" or not interaction.output_text:
-        raise ExtractionError(f"Gemini returned no result (status: {interaction.status})")
-    return interaction.output_text
+        return gemini.generate_json(_SYSTEM_INSTRUCTION, section_text, _RESPONSE_SCHEMA)
+    except gemini.GeminiError as exc:
+        raise ExtractionError(str(exc)) from exc
 
 
 def _extract_section(section: Section) -> list[ExtractedCondition]:
@@ -212,7 +192,7 @@ def extract_conditions(db: Session, tender: Tender) -> list[Condition]:
     Nothing is written unless the whole document extracts successfully.
     Raises ExtractionError, or PdfReadError if the file can't be read.
     """
-    if settings.gemini_api_key:
+    if gemini.is_configured():
         pages = read_pdf(tender_storage.resolve(tender.file_path))
         extracted = extract_from_pages(pages)
     else:
