@@ -87,6 +87,21 @@ A non-PDF returns `415` and a file over `MAX_UPLOAD_SIZE_MB` (default 20) return
 both with `errors.file`. If `title` is omitted, the file name is used. Files are stored
 under `backend/uploads/` (gitignored).
 
+## Company profile
+
+All need the bearer token and only touch the caller's own firm.
+
+| Endpoint | Body | Success |
+| --- | --- | --- |
+| `GET /api/profile` | — | `200` profile (an empty one is created on first use) |
+| `PUT /api/profile` | profile fields | `200` updated profile |
+| `GET /api/profile/contracts` | — | `200` list, newest first |
+| `POST /api/profile/contracts` | `{title, client, value, type, year}` | `201` contract |
+| `DELETE /api/profile/contracts/{id}` | — | `204` |
+
+Money amounts are in plain currency units and are returned as strings (`"30000000.00"`).
+`PUT` replaces the whole profile, so send every field.
+
 ## Common tasks
 
 ```
