@@ -45,6 +45,34 @@ backend/
 └── tests/
 ```
 
+## Auth
+
+| Endpoint | Body | Success |
+| --- | --- | --- |
+| `POST /api/auth/register` | `{email, password, firm_name}` | `201` user (with `firm`) |
+| `POST /api/auth/login` | `{email, password}` | `200` `{access_token, token_type}` |
+| `GET /api/auth/me` | — | `200` current user |
+
+Send the token as `Authorization: Bearer <access_token>`.
+
+Errors with per-field messages (validation `422`, duplicate email `409`) look like:
+
+```json
+{"detail": "Validation failed", "errors": {"password": "Password must contain at least one digit"}}
+```
+
+To protect a route, depend on the current user (returns the `User` model, or a `401`):
+
+```python
+from app.api.deps import CurrentUser
+
+@router.get("/things")
+def list_things(current_user: CurrentUser):
+    ...
+```
+
+`current_user: User = Depends(get_current_user)` from the same module is equivalent.
+
 ## Common tasks
 
 ```
