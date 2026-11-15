@@ -36,6 +36,7 @@ backend/
 ├── alembic/            migrations (versions/)
 ├── app/
 │   ├── main.py         FastAPI app, CORS, router registration
+│   ├── ai/             tender analysis pipeline (PDF reading, ...)
 │   ├── api/            route modules
 │   ├── core/config.py  settings loaded from .env
 │   ├── db/             Base, engine, get_db session dependency
