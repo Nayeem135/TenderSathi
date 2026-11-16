@@ -1,0 +1,3 @@
+/* Loads Tailwind. After this, class names like "p-4" or "text-red-700"
+   written in the components are turned into real CSS. */
+@import "tailwindcss";
