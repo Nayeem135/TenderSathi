@@ -1,130 +1,114 @@
 // RegisterPage: creates a user and their firm, then logs them in (FR-01).
-import { useState, type FormEvent } from "react";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 
-import { ApiError, errorMessage, register } from "../api";
+import { ApiError, errorMessage, register as registerUser } from "../api";
 import { useAuth } from "../auth";
+import { registerSchema, type RegisterValues } from "../authSchemas";
+import AuthShell from "../components/AuthShell";
 import Button from "../components/Button";
 import Field from "../components/Field";
 import Message from "../components/Message";
-import {
-  isValid,
-  validateConfirmPassword,
-  validateEmail,
-  validatePassword,
-  validateRequired,
-} from "../validation";
+import PasswordField from "../components/PasswordField";
 
-const NO_ERRORS = { firmName: "", email: "", password: "", confirm: "" };
+// The backend names some fields differently from this form.
+const SERVER_FIELD_NAMES: Record<string, keyof RegisterValues> = {
+  firm_name: "firmName",
+  email: "email",
+  password: "password",
+};
 
 export default function RegisterPage() {
   const { token, login } = useAuth();
   const navigate = useNavigate();
 
-  const [firmName, setFirmName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [errors, setErrors] = useState(NO_ERRORS);
-  const [serverError, setServerError] = useState("");
-  const [isSending, setIsSending] = useState(false);
+  const {
+    register,
+    handleSubmit,
+    // watch("password") gives the password as it is typed, for the strength meter.
+    watch,
+    setError,
+    formState: { errors, isSubmitting },
+  } = useForm<RegisterValues>({
+    resolver: zodResolver(registerSchema),
+    defaultValues: { firmName: "", email: "", password: "", confirm: "" },
+  });
 
   if (token) {
     return <Navigate to="/" replace />;
   }
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    setServerError("");
-
-    const found = {
-      firmName: validateRequired(firmName, "Firm name"),
-      email: validateEmail(email),
-      password: validatePassword(password),
-      confirm: validateConfirmPassword(password, confirm),
-    };
-    setErrors(found);
-    if (!isValid(found)) return;
-
-    setIsSending(true);
+  async function onSubmit(values: RegisterValues) {
     try {
-      await register(email.trim(), password, firmName.trim());
+      await registerUser(values.email, values.password, values.firmName);
       // Registering does not log the user in, so do that now.
-      await login(email.trim(), password);
+      await login(values.email, values.password);
       navigate("/", { replace: true });
     } catch (error) {
       if (error instanceof ApiError) {
         // The server can refuse a field too, for example
         // "An account with this email already exists". Show those under the
-        // matching fields. The server calls the firm field "firm_name".
-        setErrors({
-          ...NO_ERRORS,
-          firmName: error.fieldErrors.firm_name ?? "",
-          email: error.fieldErrors.email ?? "",
-          password: error.fieldErrors.password ?? "",
-        });
+        // matching fields.
+        for (const [serverName, message] of Object.entries(error.fieldErrors)) {
+          const field = SERVER_FIELD_NAMES[serverName];
+          if (field) setError(field, { type: "server", message });
+        }
       }
-      setServerError(errorMessage(error));
-    } finally {
-      setIsSending(false);
+      setError("root.server", { message: errorMessage(error) });
     }
   }
 
   return (
-    <main className="mx-auto max-w-md px-4 py-10">
-      <h1 className="text-2xl font-semibold text-slate-900">Register your firm</h1>
-
-      <form onSubmit={handleSubmit} noValidate className="mt-6 space-y-4">
-        <Message kind="error">{serverError}</Message>
+    <AuthShell
+      title="Register your firm"
+      subtitle="Create a free account. It takes less than a minute."
+      footer={
+        <>
+          Already registered?{" "}
+          <Link to="/login" className="font-medium text-accent hover:underline">
+            Log in
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-5">
+        <Message kind="error">{errors.root?.server?.message}</Message>
 
         <Field
           label="Firm name"
-          name="firmName"
           autoComplete="organization"
-          value={firmName}
-          onChange={(event) => setFirmName(event.target.value)}
-          error={errors.firmName}
+          placeholder="e.g. Rahman Builders Ltd"
+          {...register("firmName")}
+          error={errors.firmName?.message}
         />
         <Field
           label="Email"
-          name="email"
           type="email"
           autoComplete="email"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          error={errors.email}
+          placeholder="you@company.com"
+          {...register("email")}
+          error={errors.email?.message}
         />
-        <Field
+        <PasswordField
           label="Password"
-          name="password"
-          type="password"
           autoComplete="new-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          error={errors.password}
+          {...register("password")}
+          error={errors.password?.message}
           hint="At least 8 characters, with a letter and a digit."
+          strengthOf={watch("password")}
         />
-        <Field
+        <PasswordField
           label="Confirm password"
-          name="confirm"
-          type="password"
           autoComplete="new-password"
-          value={confirm}
-          onChange={(event) => setConfirm(event.target.value)}
-          error={errors.confirm}
+          {...register("confirm")}
+          error={errors.confirm?.message}
         />
 
-        <Button type="submit" disabled={isSending} className="w-full">
-          {isSending ? "Creating account…" : "Create account"}
+        <Button type="submit" size="lg" isLoading={isSubmitting} className="w-full">
+          {isSubmitting ? "Creating account…" : "Create account"}
         </Button>
       </form>
-
-      <p className="mt-6 text-sm text-slate-600">
-        Already registered?{" "}
-        <Link to="/login" className="font-medium text-blue-700 underline">
-          Log in
-        </Link>
-      </p>
-    </main>
+    </AuthShell>
   );
 }

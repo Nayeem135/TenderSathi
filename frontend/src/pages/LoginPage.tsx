@@ -1,27 +1,33 @@
 // LoginPage: the email and password form (FR-01).
-import { useState, type FormEvent } from "react";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { errorMessage } from "../api";
 import { useAuth } from "../auth";
+import { loginSchema, type LoginValues } from "../authSchemas";
+import AuthShell from "../components/AuthShell";
 import Button from "../components/Button";
 import Field from "../components/Field";
 import Message from "../components/Message";
-import { isValid, validateEmail, validateRequired } from "../validation";
+import PasswordField from "../components/PasswordField";
 
 export default function LoginPage() {
   const { token, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  // useState holds a value that, when changed, redraws the component.
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  // One error message per field, shown under that field.
-  const [errors, setErrors] = useState({ email: "", password: "" });
-  // A message from the server, such as "Invalid email or password".
-  const [serverError, setServerError] = useState("");
-  const [isSending, setIsSending] = useState(false);
+  // useForm keeps the field values, the error messages and whether the form
+  // is being sent. zodResolver checks the values against loginSchema.
+  const {
+    register,
+    handleSubmit,
+    setError,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginValues>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { email: "", password: "" },
+  });
 
   // Where to go after logging in: the page the user first asked for, if
   // ProtectedRoute sent them here, otherwise the home page.
@@ -32,68 +38,58 @@ export default function LoginPage() {
     return <Navigate to={destination} replace />;
   }
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault(); // stop the browser from reloading the page
-    setServerError("");
-
-    // Check the fields first. If anything is wrong, show it and stop.
-    const found = {
-      email: validateEmail(email),
-      password: validateRequired(password, "Password"),
-    };
-    setErrors(found);
-    if (!isValid(found)) return;
-
-    setIsSending(true);
+  // handleSubmit only calls this once every field has passed the schema,
+  // and passes the cleaned-up values (the email already trimmed).
+  async function onSubmit(values: LoginValues) {
     try {
-      await login(email.trim(), password);
+      await login(values.email, values.password);
       navigate(destination, { replace: true });
     } catch (error) {
-      setServerError(errorMessage(error));
-    } finally {
-      setIsSending(false);
+      // "root.server" is a form-wide error, not tied to one field, such as
+      // "Invalid email or password".
+      setError("root.server", { message: errorMessage(error) });
     }
   }
 
   return (
-    <main className="mx-auto max-w-md px-4 py-10">
-      <h1 className="text-2xl font-semibold text-slate-900">Log in to TenderSathi</h1>
-
+    <AuthShell
+      title="Welcome back"
+      subtitle="Log in to check your firm's eligibility for tenders."
+      footer={
+        <>
+          No account yet?{" "}
+          <Link to="/register" className="font-medium text-accent hover:underline">
+            Register your firm
+          </Link>
+        </>
+      }
+    >
       {/* noValidate turns off the browser's own pop-up messages, so only
           our messages under the fields are shown. */}
-      <form onSubmit={handleSubmit} noValidate className="mt-6 space-y-4">
-        <Message kind="error">{serverError}</Message>
+      <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-5">
+        <Message kind="error">{errors.root?.server?.message}</Message>
 
+        {/* register("email") connects the input to the form: its name,
+            value changes and ref. */}
         <Field
           label="Email"
-          name="email"
           type="email"
           autoComplete="email"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          error={errors.email}
+          placeholder="you@company.com"
+          {...register("email")}
+          error={errors.email?.message}
         />
-        <Field
+        <PasswordField
           label="Password"
-          name="password"
-          type="password"
           autoComplete="current-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          error={errors.password}
+          {...register("password")}
+          error={errors.password?.message}
         />
 
-        <Button type="submit" disabled={isSending} className="w-full">
-          {isSending ? "Logging in…" : "Log in"}
+        <Button type="submit" size="lg" isLoading={isSubmitting} className="w-full">
+          {isSubmitting ? "Logging in…" : "Log in"}
         </Button>
       </form>
-
-      <p className="mt-6 text-sm text-slate-600">
-        No account yet?{" "}
-        <Link to="/register" className="font-medium text-blue-700 underline">
-          Register your firm
-        </Link>
-      </p>
-    </main>
+    </AuthShell>
   );
 }
