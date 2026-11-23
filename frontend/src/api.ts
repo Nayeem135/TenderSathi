@@ -7,9 +7,15 @@
 // 3. sends the user to the login page when the backend answers 401
 //    ("you are not logged in", for example because the token has expired).
 
+import { mockRequest } from "./mocks";
+
 // import.meta.env holds the values from the .env file. If VITE_API_URL is
 // not set, fall back to the usual local backend address.
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
+// With VITE_USE_MOCKS=true in .env, no request reaches the backend; the
+// pretend backend in mocks.ts answers instead. See that file.
+export const USE_MOCKS: boolean = import.meta.env.VITE_USE_MOCKS === "true";
 
 // ---- the token ---------------------------------------------------------------
 // The token is kept in the browser's localStorage so the user stays logged
@@ -79,36 +85,44 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     headers["Content-Type"] = "application/json";
   }
 
-  let response: Response;
-  try {
-    response = await fetch(BASE_URL + path, {
-      method,
-      headers,
-      body: isForm ? body : body ? JSON.stringify(body) : undefined,
-    });
-  } catch {
-    // fetch() itself fails when the backend is not running or there is no network.
-    throw new ApiError(0, "Cannot reach the server. Check that the backend is running.");
+  // The status code and the JSON answer, from the real backend or the mock.
+  let status: number;
+  let data: any;
+
+  if (USE_MOCKS) {
+    ({ status, data } = await mockRequest(method, path, body, token));
+  } else {
+    let response: Response;
+    try {
+      response = await fetch(BASE_URL + path, {
+        method,
+        headers,
+        body: isForm ? body : body ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      // fetch() itself fails when the backend is not running or there is no network.
+      throw new ApiError(0, "Cannot reach the server. Check that the backend is running.");
+    }
+    status = response.status;
+    // Read the JSON answer. If the body is empty or not JSON, use null.
+    data = await response.json().catch(() => null);
   }
 
   // Job 3: the token was refused, so log out and go to the login page.
-  if (response.status === 401 && token) {
+  if (status === 401 && token) {
     clearToken();
     window.location.assign("/login");
     throw new ApiError(401, "Your session has ended. Please log in again.");
   }
 
   // 204 means "done, nothing to send back" (used by delete).
-  if (response.status === 204) {
+  if (status === 204) {
     return undefined as T;
   }
 
-  // Read the JSON answer. If the body is not JSON, use null.
-  const data = await response.json().catch(() => null);
-
-  if (!response.ok) {
+  if (status < 200 || status >= 300) {
     const message = typeof data?.detail === "string" ? data.detail : "Something went wrong.";
-    throw new ApiError(response.status, message, data?.errors ?? {});
+    throw new ApiError(status, message, data?.errors ?? {});
   }
   return data as T;
 }
@@ -239,12 +253,14 @@ export function uploadTender(file: File, title: string): Promise<Tender> {
   return request<Tender>("/api/tenders", { method: "POST", body: form });
 }
 
-// The analysis addresses below are the only ones in this file that the
-// backend did not have yet when this was written. If the backend uses
-// different addresses, these functions are the only place to change.
+// Deletes the tender, its analysis and its PDF. Cannot be undone.
+export function deleteTender(tenderId: number): Promise<void> {
+  return request<void>(`/api/tenders/${tenderId}`, { method: "DELETE" });
+}
 
-// Asks the backend to read the PDF and work out its conditions. This can
-// take a while for a long document.
+// Asks the backend to read the PDF, work out its conditions, and check each
+// one against the company profile. This can take a while for a long
+// document. Run it again after changing the profile to update the report.
 export function analyzeTender(tenderId: number): Promise<unknown> {
   return request<unknown>(`/api/tenders/${tenderId}/analyze`, { method: "POST" });
 }
@@ -265,11 +281,12 @@ export type ReportItem = Condition & {
 };
 
 export type EligibilityReport = {
+  tender: Tender;
   results: ReportItem[];
 };
 
-// The verdict for every condition of a tender. Like the two functions
-// above, the address is the one place to change if the backend differs.
+// The verdict for every condition of a tender, and the tender itself. The
+// backend also sends the counts; the report page works them out itself.
 export function getReport(tenderId: number): Promise<EligibilityReport> {
   return request<EligibilityReport>(`/api/tenders/${tenderId}/report`);
 }
