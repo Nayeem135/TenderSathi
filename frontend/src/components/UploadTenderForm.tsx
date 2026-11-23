@@ -1,5 +1,7 @@
-// UploadTenderForm: picks a PDF, checks it, and uploads it (FR-09).
-import { useState, type ChangeEvent, type FormEvent } from "react";
+// UploadTenderForm: picks a PDF (by dragging it onto the box or clicking to
+// choose one), checks it, and uploads it (FR-09).
+import { FileText, UploadCloud, X } from "lucide-react";
+import { useRef, useState, type DragEvent, type FormEvent } from "react";
 
 import { ApiError, errorMessage, MAX_UPLOAD_MB, uploadTender, type Tender } from "../api";
 import Button from "./Button";
@@ -23,24 +25,39 @@ function checkFile(file: File | null): string {
   return "";
 }
 
+function formatSize(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+}
+
 export default function UploadTenderForm({ onUploaded }: UploadTenderFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [fileError, setFileError] = useState("");
   const [serverError, setServerError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    // A file input gives a list; this form only takes the first file.
-    const chosen = event.target.files?.[0] ?? null;
+  function choose(chosen: File | null) {
     setFile(chosen);
+    setServerError("");
     // Check as soon as a file is picked, not only when the form is sent.
     setFileError(chosen ? checkFile(chosen) : "");
   }
 
+  function clearFile() {
+    choose(null);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function handleDrop(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault(); // stop the browser from opening the PDF itself
+    setIsDragging(false);
+    choose(event.dataTransfer.files[0] ?? null);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const formElement = event.currentTarget; // kept for clearing the form later
     setServerError("");
 
     const problem = checkFile(file);
@@ -51,9 +68,7 @@ export default function UploadTenderForm({ onUploaded }: UploadTenderFormProps) 
     try {
       const tender = await uploadTender(file, title);
       onUploaded(tender);
-      // Clear the form. A file input can only be emptied by resetting the form.
-      formElement.reset();
-      setFile(null);
+      clearFile();
       setTitle("");
     } catch (error) {
       // The server checks the file again and may refuse it.
@@ -67,29 +82,90 @@ export default function UploadTenderForm({ onUploaded }: UploadTenderFormProps) 
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="space-y-4 rounded-md border border-slate-200 p-4">
-      <h2 className="font-medium text-slate-900">Upload a tender</h2>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field
-          label="Tender document (PDF)"
+    <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      {/* The drop area is the file input's label, so clicking anywhere on it
+          opens the file picker, and keyboard users reach the input itself. */}
+      <label
+        htmlFor="tender-file"
+        onDragOver={(event) => {
+          event.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleDrop}
+        className={
+          "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center transition-colors " +
+          "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand-600 " +
+          (fileError
+            ? "border-red-300 dark:border-red-500/40 bg-red-50/50 dark:bg-red-500/5"
+            : isDragging
+              ? "border-brand-500 bg-accent-soft"
+              : "border-line-strong bg-surface-muted hover:border-brand-500 hover:bg-accent-soft/50")
+        }
+      >
+        <span className="flex size-12 items-center justify-center rounded-full bg-surface text-accent shadow-sm ring-1 ring-line">
+          <UploadCloud aria-hidden="true" className="size-6" />
+        </span>
+        <span className="mt-3 font-medium text-fg">
+          <span className="text-accent">Click to choose a PDF</span> or drag it here
+        </span>
+        <span className="mt-1 text-sm text-fg-4">PDF only, up to {MAX_UPLOAD_MB} MB</span>
+        <input
+          ref={inputRef}
+          id="tender-file"
           name="file"
           type="file"
           accept="application/pdf,.pdf"
-          onChange={handleFileChange}
-          error={fileError}
-          hint={`PDF only, up to ${MAX_UPLOAD_MB} MB`}
+          className="sr-only"
+          aria-invalid={fileError ? true : undefined}
+          aria-describedby={fileError ? "tender-file-error" : undefined}
+          onChange={(event) => choose(event.target.files?.[0] ?? null)}
         />
-        <Field
-          label="Title (optional)"
-          name="title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          hint="Leave empty to use the file name"
-        />
-      </div>
+      </label>
+
+      {fileError && (
+        <p id="tender-file-error" className="text-sm text-red-700 dark:text-red-400">
+          {fileError}
+        </p>
+      )}
+
+      {/* The chosen file, with a button to remove it. */}
+      {file && !fileError && (
+        <div className="flex items-center gap-3 rounded-lg border border-line bg-surface px-3 py-2.5">
+          <FileText aria-hidden="true" className="size-5 shrink-0 text-red-600 dark:text-red-400" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium text-fg">{file.name}</p>
+            <p className="text-xs text-fg-4">{formatSize(file.size)}</p>
+          </div>
+          <button
+            type="button"
+            onClick={clearFile}
+            className="rounded-md p-1 text-fg-4 hover:bg-surface-subtle hover:text-fg-2"
+            aria-label={`Remove ${file.name}`}
+          >
+            <X aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+      )}
+
+      <Field
+        label="Title (optional)"
+        name="title"
+        value={title}
+        placeholder="e.g. Upazila road works, package 3"
+        onChange={(event) => setTitle(event.target.value)}
+        hint="Leave empty to use the file name."
+      />
+
       <Message kind="error">{serverError}</Message>
-      <Button type="submit" disabled={isUploading}>
-        {isUploading ? "Uploading…" : "Upload"}
+
+      <Button
+        type="submit"
+        isLoading={isUploading}
+        icon={<UploadCloud aria-hidden="true" className="size-4" />}
+        className="w-full sm:w-auto"
+      >
+        {isUploading ? "Uploading…" : "Upload tender"}
       </Button>
     </form>
   );

@@ -1,10 +1,13 @@
 // TendersPage: upload tenders, list them, analyze one, and see its
 // conditions (FR-09 to FR-11).
+import { ArrowRight, FileSearch, FileText, Search, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 
 import {
   analyzeTender,
+  deleteTender,
   errorMessage,
   getConditions,
   listTenders,
@@ -12,8 +15,15 @@ import {
   type Tender,
 } from "../api";
 import Button from "../components/Button";
+import Card from "../components/Card";
 import ConditionsTable from "../components/ConditionsTable";
+import ConfirmDialog from "../components/ConfirmDialog";
+import EmptyState from "../components/EmptyState";
 import Message from "../components/Message";
+import PageHeader from "../components/PageHeader";
+import { SkeletonRows } from "../components/Skeleton";
+import Spinner from "../components/Spinner";
+import TenderStatusBadge from "../components/TenderStatusBadge";
 import UploadTenderForm from "../components/UploadTenderForm";
 import { formatDate } from "../format";
 
@@ -21,6 +31,11 @@ export default function TendersPage() {
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  // The tender waiting for "Delete" to be confirmed, and whether it is being deleted.
+  const [toDelete, setToDelete] = useState<Tender | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  // The text typed in the search box above the list.
+  const [search, setSearch] = useState("");
 
   // The tender whose conditions are shown under the list, if any.
   const [selected, setSelected] = useState<Tender | null>(null);
@@ -63,105 +78,224 @@ export default function TendersPage() {
     setBusy({ id: tender.id, doing: "analyzing" });
     try {
       await analyzeTender(tender.id);
-      setConditions(await getConditions(tender.id));
+      const found = await getConditions(tender.id);
+      setConditions(found);
       setSelected(tender);
-      await loadTenders(); // the tender's status may have changed
+      toast.success(`"${tender.title}" analyzed`, {
+        description: `${found.length} conditions found. Open the report to see which ones you meet.`,
+      });
+      await loadTenders(); // the tender's status has changed
     } catch (problem) {
       setError(errorMessage(problem));
+      await loadTenders(); // it may now say "Analysis failed"
     } finally {
       setBusy(null);
     }
   }
 
+  // Runs when "Delete" is confirmed in the dialog.
+  async function handleDelete(tender: Tender) {
+    setError("");
+    setIsDeleting(true);
+    try {
+      await deleteTender(tender.id);
+      setTenders(tenders.filter((item) => item.id !== tender.id));
+      if (selected?.id === tender.id) setSelected(null);
+      toast.success("Tender deleted", { description: tender.title });
+    } catch (problem) {
+      setError(errorMessage(problem));
+    } finally {
+      setIsDeleting(false);
+      setToDelete(null);
+    }
+  }
+
+  const shownTenders = tenders.filter((tender) =>
+    tender.title.toLowerCase().includes(search.trim().toLowerCase()),
+  );
+
   return (
-    <main className="mx-auto max-w-5xl space-y-8 px-4 py-8">
-      <h1 className="text-2xl font-semibold text-slate-900">Tenders</h1>
+    <>
+      <PageHeader
+        title="Tenders"
+        description="Upload a tender document, analyze it, and open the eligibility report."
+      />
 
-      {/* The new tender goes to the top of the list. */}
-      <UploadTenderForm onUploaded={(tender) => setTenders([tender, ...tenders])} />
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card
+          className="lg:col-span-1 lg:self-start"
+          title="Upload a tender"
+          icon={<UploadCloud aria-hidden="true" className="size-5" />}
+        >
+          {/* The new tender goes to the top of the list. */}
+          <UploadTenderForm
+            onUploaded={(tender) => {
+              setTenders([tender, ...tenders]);
+              setError("");
+              toast.success(`"${tender.title}" uploaded`, { description: 'Click "Analyze" to check it.' });
+            }}
+          />
+        </Card>
 
-      <Message kind="error">{error}</Message>
+        <div className="space-y-4 lg:col-span-2">
+          <Message kind="error">{error}</Message>
 
-      {/* aria-live makes screen readers announce the text when it appears. */}
-      <p aria-live="polite" className="text-sm text-slate-600">
-        {busy?.doing === "analyzing"
-          ? "Analyzing the tender. This can take a minute for a long document…"
-          : ""}
-      </p>
+          {/* aria-live makes screen readers announce the text when it appears. */}
+          {/* empty:hidden: takes no space while there is nothing to say. */}
+          <div aria-live="polite" className="empty:hidden">
+            {busy?.doing === "analyzing" && (
+              <div className="flex items-center gap-3 rounded-lg border border-accent-line bg-accent-soft px-4 py-3 text-sm text-accent-strong">
+                <Spinner className="size-5 text-accent" />
+                <span>
+                  <span className="font-semibold">Analyzing the tender.</span> Reading the PDF and
+                  checking each condition against your profile. This can take a minute for a long
+                  document…
+                </span>
+              </div>
+            )}
+          </div>
 
-      <section>
-        <h2 className="text-xl font-semibold text-slate-900">Your tenders</h2>
-        <div className="mt-4">
-          {isLoading ? (
-            <p className="text-slate-600">Loading tenders…</p>
-          ) : tenders.length === 0 ? (
-            <p className="text-slate-600">No tenders uploaded yet.</p>
-          ) : (
-            // "relative" keeps the hidden "Actions" label inside this box,
-            // so it cannot widen the page on a phone.
-            <div className="relative overflow-x-auto rounded-md border border-slate-200">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-slate-700">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Title</th>
-                    <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">Uploaded</th>
-                    <th className="px-3 py-2">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tenders.map((tender) => (
-                    <tr key={tender.id} className="border-t border-slate-200">
-                      <td className="min-w-48 px-3 py-2">{tender.title}</td>
-                      <td className="px-3 py-2 capitalize">{tender.status}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        {formatDate(tender.uploaded_at)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center justify-end gap-2">
-                          <Link
-                            to={`/tenders/${tender.id}/report`}
-                            className="px-2 text-sm font-medium whitespace-nowrap text-blue-700 underline"
-                          >
-                            Report
-                          </Link>
-                          <Button
-                            variant="secondary"
-                            disabled={busy !== null}
-                            onClick={() => handleView(tender)}
-                          >
-                            {busy?.id === tender.id && busy.doing === "loading"
-                              ? "Loading…"
-                              : "Conditions"}
-                          </Button>
-                          <Button disabled={busy !== null} onClick={() => handleAnalyze(tender)}>
-                            {busy?.id === tender.id && busy.doing === "analyzing"
-                              ? "Analyzing…"
-                              : "Analyze"}
-                          </Button>
+          <Card
+            title="Your tenders"
+            description={tenders.length > 0 ? `${tenders.length} uploaded` : undefined}
+            actions={
+              tenders.length > 1 && (
+                <div className="relative w-full sm:w-56">
+                  <Search
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-fg-5"
+                  />
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search tenders"
+                    aria-label="Search tenders"
+                    className="w-full rounded-lg bg-surface-muted py-1.5 pr-3 pl-9 text-sm ring-1 ring-line placeholder:text-fg-5 focus:bg-surface focus:ring-2 focus:ring-brand-600/30 focus:outline-none"
+                  />
+                </div>
+              )
+            }
+            icon={<FileText aria-hidden="true" className="size-5" />}
+            padded={false}
+          >
+            {isLoading ? (
+              <SkeletonRows rows={3} label="Loading tenders…" />
+            ) : tenders.length === 0 ? (
+              <EmptyState icon={<FileText aria-hidden="true" className="size-6" />} title="No tenders yet">
+                Upload your first tender document using the form.
+              </EmptyState>
+            ) : shownTenders.length === 0 ? (
+              <p className="px-5 py-10 text-center text-sm text-fg-4">No tenders match "{search}".</p>
+            ) : (
+              <ul className="divide-y divide-line-subtle">
+                {shownTenders.map((tender) => {
+                  const isBusy = busy?.id === tender.id;
+                  return (
+                    <li
+                      key={tender.id}
+                      className={
+                        "flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between " +
+                        (selected?.id === tender.id ? "bg-accent-soft/40" : "")
+                      }
+                    >
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
+                          <FileText aria-hidden="true" className="size-5" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-fg">{tender.title}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-4">
+                            <TenderStatusBadge status={tender.status} />
+                            <span>Uploaded {formatDate(tender.uploaded_at)}</span>
+                          </div>
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+                        {tender.status === "analyzed" && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={busy !== null}
+                              isLoading={isBusy && busy.doing === "loading"}
+                              icon={<FileSearch aria-hidden="true" className="size-4" />}
+                              onClick={() => handleView(tender)}
+                            >
+                              Conditions
+                            </Button>
+                            <Link
+                              to={`/tenders/${tender.id}/report`}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-sm font-medium text-fg shadow-sm hover:bg-surface-muted"
+                            >
+                              Report
+                              <ArrowRight aria-hidden="true" className="size-4" />
+                            </Link>
+                          </>
+                        )}
+                        <Button
+                          size="sm"
+                          variant={tender.status === "analyzed" ? "secondary" : "primary"}
+                          disabled={busy !== null}
+                          isLoading={isBusy && busy.doing === "analyzing"}
+                          icon={<Sparkles aria-hidden="true" className="size-4" />}
+                          onClick={() => handleAnalyze(tender)}
+                        >
+                          {isBusy && busy.doing === "analyzing"
+                            ? "Analyzing…"
+                            : tender.status === "analyzed"
+                              ? "Re-analyze"
+                              : "Analyze"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy !== null}
+                          icon={<Trash2 aria-hidden="true" className="size-4" />}
+                          onClick={() => setToDelete(tender)}
+                          aria-label={`Delete ${tender.title}`}
+                          className="text-fg-4 hover:text-red-600 dark:hover:text-red-400"
+                        />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+
+          {selected && (
+            <Card
+              title={`Conditions in "${selected.title}"`}
+              description={`${conditions.length} found, in the order they appear in the document`}
+              icon={<FileSearch aria-hidden="true" className="size-5" />}
+              actions={
+                <Link
+                  to={`/tenders/${selected.id}/report`}
+                  className="inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline"
+                >
+                  Open report
+                  <ArrowRight aria-hidden="true" className="size-4" />
+                </Link>
+              }
+              padded={false}
+            >
+              <ConditionsTable conditions={conditions} />
+            </Card>
           )}
         </div>
-      </section>
+      </div>
 
-      {selected && (
-        <section>
-          <h2 className="text-xl font-semibold text-slate-900">
-            Conditions in "{selected.title}"
-          </h2>
-          <div className="mt-4">
-            <ConditionsTable conditions={conditions} />
-          </div>
-        </section>
-      )}
-    </main>
+      <ConfirmDialog
+        open={toDelete !== null}
+        title="Delete this tender?"
+        message={`"${toDelete?.title ?? ""}", its conditions and its report will be deleted. This cannot be undone.`}
+        confirmLabel="Delete tender"
+        isWorking={isDeleting}
+        onConfirm={() => toDelete && handleDelete(toDelete)}
+        onCancel={() => setToDelete(null)}
+      />
+    </>
   );
 }
