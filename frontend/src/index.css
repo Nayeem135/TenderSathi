@@ -1,3 +1,125 @@
 /* Loads Tailwind. After this, class names like "p-4" or "text-red-700"
    written in the components are turned into real CSS. */
 @import "tailwindcss";
+
+/* "dark:" classes apply when <html> has the class "dark". The theme switch
+   (src/theme.tsx) adds or removes that class. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* The app's own design settings. Changing a value here changes it
+   everywhere.
+
+   - brand-*: the brand colour. Set these to another palette to re-colour
+     every button, link and highlight.
+   - The other colours are "theme tokens": named by their job, not their
+     shade. Components use bg-surface, text-fg, border-line and so on, and
+     the .dark block below gives each token its dark-mode value. That is
+     the whole dark mode: no component lists its own dark colours, except
+     the coloured status badges. */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand-950: #172554;
+
+  /* Backgrounds, from the page itself to the most raised element. */
+  --color-canvas: #f8fafc; /* the page behind everything */
+  --color-surface: #ffffff; /* cards, inputs, menus */
+  --color-surface-muted: #f8fafc; /* table headers, hovered rows */
+  --color-surface-subtle: #f1f5f9; /* chips, tracks of bars */
+  --color-surface-strong: #e2e8f0; /* loading placeholders */
+
+  /* Text, from most to least important. */
+  --color-fg: #0f172a;
+  --color-fg-2: #334155;
+  --color-fg-3: #475569;
+  --color-fg-4: #64748b;
+  --color-fg-5: #94a3b8;
+  --color-fg-6: #cbd5e1;
+
+  /* Borders and dividing lines. */
+  --color-line: #e2e8f0;
+  --color-line-subtle: #f1f5f9;
+  --color-line-strong: #cbd5e1;
+
+  /* The brand colour as used on a surface: links, highlights, icon badges. */
+  --color-accent: #1d4ed8;
+  --color-accent-strong: #1e3a8a;
+  --color-accent-soft: #eff6ff;
+  --color-accent-line: #bfdbfe;
+}
+
+/* Dark mode: the same tokens, dark values. */
+.dark {
+  color-scheme: dark; /* dark scrollbars, date pickers and so on */
+
+  --color-canvas: #020617;
+  --color-surface: #0f172a;
+  --color-surface-muted: #131c2f;
+  --color-surface-subtle: #1e293b;
+  --color-surface-strong: #334155;
+
+  --color-fg: #f8fafc;
+  --color-fg-2: #e2e8f0;
+  --color-fg-3: #cbd5e1;
+  --color-fg-4: #94a3b8;
+  --color-fg-5: #64748b;
+  --color-fg-6: #475569;
+
+  --color-line: #1e293b;
+  --color-line-subtle: #172033;
+  --color-line-strong: #334155;
+
+  --color-accent: #93c5fd;
+  --color-accent-strong: #bfdbfe;
+  --color-accent-soft: #172554;
+  --color-accent-line: #1e3a8a;
+}
+
+@layer base {
+  body {
+    @apply bg-canvas text-fg antialiased;
+  }
+
+  /* Edge adds its own "reveal password" eye to password boxes; the app has
+     its own show/hide button (PasswordField), so hide Edge's. */
+  input::-ms-reveal,
+  input::-ms-clear {
+    display: none;
+  }
+}
+
+/* When the report is printed (or saved as PDF), hide the navigation and
+   buttons, and always print in light colours on white, even in dark mode. */
+@media print {
+  .dark {
+    color-scheme: light;
+    --color-canvas: #ffffff;
+    --color-surface: #ffffff;
+    --color-surface-muted: #f8fafc;
+    --color-surface-subtle: #f1f5f9;
+    --color-fg: #0f172a;
+    --color-fg-2: #334155;
+    --color-fg-3: #475569;
+    --color-fg-4: #64748b;
+    --color-line: #e2e8f0;
+    --color-line-subtle: #f1f5f9;
+    --color-accent: #1d4ed8;
+    --color-accent-soft: #eff6ff;
+  }
+  body {
+    background: white;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
