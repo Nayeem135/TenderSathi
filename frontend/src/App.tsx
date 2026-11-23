@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 
 import { ProtectedRoute } from "./auth";
 import Layout from "./components/Layout";
+import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import ProfilePage from "./pages/ProfilePage";
 import RegisterPage from "./pages/RegisterPage";
@@ -21,6 +22,7 @@ export default function App() {
           token to /login. Layout adds the navigation bar around each page. */}
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
+          <Route path="/" element={<DashboardPage />} />
           <Route path="/tenders" element={<TendersPage />} />
           {/* :tenderId is a placeholder; /tenders/7/report shows tender 7. */}
           <Route path="/tenders/:tenderId/report" element={<ReportPage />} />
@@ -28,8 +30,8 @@ export default function App() {
         </Route>
       </Route>
 
-      {/* Any other address, including "/", goes to the tenders page. */}
-      <Route path="*" element={<Navigate to="/tenders" replace />} />
+      {/* Any other address goes to the dashboard. */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
