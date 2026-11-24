@@ -1,19 +1,26 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from email_validator import EmailNotValidError, validate_email
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.security import MAX_PASSWORD_BYTES
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(max_length=320)
     password: str
     firm_name: str = Field(max_length=255)
 
     @field_validator("email")
     @classmethod
-    def _normalise_email(cls, value: str) -> str:
-        return value.lower()
+    def _valid_email(cls, value: str) -> str:
+        # The same check as Pydantic's EmailStr (the email-validator library),
+        # but with a message a user can act on, followed by the specific problem.
+        try:
+            result = validate_email(value.strip(), check_deliverability=False)
+        except EmailNotValidError as exc:
+            raise ValueError(f"Enter a valid email address. {exc}") from None
+        return result.normalized.lower()
 
     @field_validator("password")
     @classmethod
