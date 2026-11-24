@@ -1,17 +1,17 @@
-"""One run through the whole flow in fallback mode (no Gemini API key):
-register -> login -> upload a PDF -> extract conditions -> match -> results."""
+"""One run through the whole flow in fallback mode (no Gemini API key), using
+only the HTTP API, as the frontend does:
+register -> login -> upload a PDF -> fill in the company profile ->
+analyze (extract conditions, then match) -> conditions -> report."""
 
 from datetime import date
 from decimal import Decimal
 
 import pymupdf
-from sqlalchemy import select
 
 from app.ai import gemini
-from app.ai.extractor import extract_conditions, load_sample_conditions
-from app.ai.matcher import MET, NEEDS_REVIEW, NOT_MET, ContractData, ProfileData, match_tender
+from app.ai.extractor import load_sample_conditions
+from app.ai.matcher import MET, NEEDS_REVIEW, NOT_MET
 from app.core.config import settings
-from app.models import Condition, EligibilityResult, Tender
 
 LAKH = Decimal(100_000)
 
@@ -24,7 +24,7 @@ def pdf_bytes():
     return data
 
 
-def test_full_flow_in_fallback_mode(client, auth_headers, db_session, tmp_path, monkeypatch):
+def test_full_flow_in_fallback_mode(client, auth_headers, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
     monkeypatch.setattr(settings, "gemini_api_key", "")
 
@@ -44,38 +44,57 @@ def test_full_flow_in_fallback_mode(client, auth_headers, db_session, tmp_path, 
     tender_id = upload.json()["id"]
     assert [t["id"] for t in client.get("/api/tenders", headers=headers).json()] == [tender_id]
 
-    # Extract: with no key, the sample conditions are saved for this tender.
-    tender = db_session.get(Tender, tender_id)
-    conditions = extract_conditions(db_session, tender)
-
-    sample = load_sample_conditions()
-    assert [c.text for c in conditions] == [c.text for c in sample]
-    assert db_session.scalars(select(Condition.tender_id).distinct()).all() == [tender_id]
-
-    # Match against a firm that passes three of the four numeric conditions.
-    profile = ProfileData(
-        annual_turnovers={2023: 300 * LAKH, 2024: 350 * LAKH, 2025: 400 * LAKH},  # average 350
-        liquid_assets=50 * LAKH,  # below the required 75
-        years_of_experience=8,
-        contracts=(
-            ContractData("Bridge approach road", 200 * LAKH, date(2024, 3, 1)),
-            ContractData("Town drainage", 160 * LAKH, date(2023, 6, 15)),
-        ),
+    # The firm fills in its profile: it passes three of the four numeric
+    # conditions in the sample.
+    saved = client.put(
+        "/api/profile",
+        headers=headers,
+        json={
+            "annual_turnover": str(350 * LAKH),  # required: 300 lakh
+            "liquid_assets": str(50 * LAKH),  # required: 75 lakh
+            "years_of_experience": 8,  # required: 5
+        },
     )
-    summary = match_tender(db_session, tender, profile, today=date(2026, 11, 15))
+    assert saved.status_code == 200
+    # Two contracts of at least 150 lakh, both within the last 5 years.
+    this_year = date.today().year
+    for title, lakh, year in [("Bridge approach road", 200, this_year - 1), ("Town drainage", 160, this_year - 2)]:
+        added = client.post(
+            "/api/profile/contracts",
+            headers=headers,
+            json={"title": title, "value": str(lakh * LAKH), "year": year},
+        )
+        assert added.status_code == 201
 
-    assert (summary.met, summary.not_met, summary.needs_review) == (3, 1, 6)
-    assert summary.total == len(sample)
+    # Analyze: with no key, the sample conditions are extracted, then matched
+    # against the saved profile.
+    analysis = client.post(f"/api/tenders/{tender_id}/analyze", headers=headers)
+    assert analysis.status_code == 200, analysis.text
+    body = analysis.json()
+    sample = load_sample_conditions()
+    assert body["tender"]["status"] == "analyzed"
+    assert body["conditions"] == len(sample)
+    assert body["summary"] == {
+        "met": 3,
+        "not_met": 1,
+        "needs_review": 6,
+        "total": len(sample),
+        "headline": f"3 of {len(sample)} conditions met",
+    }
 
-    # One saved result per condition, each with a reason.
-    results = db_session.scalars(select(EligibilityResult)).all()
-    assert sorted(r.condition_id for r in results) == sorted(c.id for c in conditions)
-    assert all(r.reason for r in results)
+    # The conditions, with page and clause kept.
+    conditions = client.get(f"/api/tenders/{tender_id}/conditions", headers=headers).json()
+    assert [c["text"] for c in conditions] == [c.text for c in sample]
+    assert all(c["page"] and c["clause"] for c in conditions)
 
-    status_of = {r.condition.text: r.status for r in results}
+    # The report: one verdict with a reason per condition.
+    report = client.get(f"/api/tenders/{tender_id}/report", headers=headers).json()
+    assert report["summary"] == body["summary"]
+    assert [r["id"] for r in report["results"]] == [c["id"] for c in conditions]
+    assert all(r["reason"] for r in report["results"])
 
     def status_containing(phrase):
-        (status,) = [s for text, s in status_of.items() if phrase in text]
+        (status,) = [r["status"] for r in report["results"] if phrase in r["text"]]
         return status
 
     assert status_containing("turnover") == MET
