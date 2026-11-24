@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models import Firm, User
+from app.models import CompanyProfile, Firm, User
 
 VALID = {"email": "owner@example.com", "password": "passw0rd123", "firm_name": "Acme LLP"}
 
@@ -41,6 +41,29 @@ def test_register_creates_user_and_firm(client, db_session):
     assert firm.name == "Acme LLP"
 
 
+def test_register_creates_an_empty_profile_for_the_firm(client, db_session):
+    firm_id = register(client).json()["firm_id"]
+
+    profile = db_session.scalar(select(CompanyProfile))
+    assert profile.firm_id == firm_id
+    assert profile.annual_turnover is None and profile.trade_licence_no is None
+
+
+def test_register_trims_and_lowercases_the_email(client):
+    response = register(client, email="  Owner@Example.COM ")
+
+    assert response.json()["email"] == "owner@example.com"
+    assert login(client, email="owner@example.com").status_code == 200
+
+
+@pytest.mark.parametrize("email", ["not-an-email", "owner@", "@example.com", "a b@example.com"])
+def test_register_rejects_invalid_email_with_a_clear_message(client, email):
+    response = register(client, email=email)
+
+    assert response.status_code == 422
+    assert response.json()["errors"]["email"].startswith("Enter a valid email address.")
+
+
 def test_register_stores_bcrypt_hash_not_password(client, db_session):
     register(client)
 
@@ -55,8 +78,9 @@ def test_register_duplicate_email_returns_409(client, db_session):
 
     assert response.status_code == 409
     assert "email" in response.json()["errors"]
-    # The failed attempt must not leave an orphan firm behind.
+    # The failed attempt must not leave an orphan firm or profile behind.
     assert len(db_session.scalars(select(Firm)).all()) == 1
+    assert len(db_session.scalars(select(CompanyProfile)).all()) == 1
 
 
 @pytest.mark.parametrize(
