@@ -6,7 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from app.ai import extractor
-from app.ai.extractor import ExtractionError, extract_conditions, split_into_sections
+from app.ai.extractor import (
+    ExtractionError,
+    extract_conditions,
+    load_sample_conditions,
+    split_into_sections,
+)
 from app.ai.pdf_reader import PageText
 from app.core.config import settings
 from app.models import Condition, Firm, Tender
@@ -18,7 +23,7 @@ def reply(*conditions):
 
 def condition(**overrides):
     return {
-        "category": "financial",
+        "category": "turnover",
         "text": "Turnover of at least 50 lakh",
         "page": 1,
         "clause": "4.1",
@@ -92,7 +97,7 @@ def test_saves_validated_conditions_with_page_and_clause(db_session, tender, gem
     gemini.replies.append(
         reply(
             condition(),
-            condition(category="legal", text="Valid trade licence", page=2,
+            condition(category="required_document", text="Valid trade licence", page=2,
                       clause=None, numeric_value=None, unit=None),
         )
     )
@@ -102,8 +107,8 @@ def test_saves_validated_conditions_with_page_and_clause(db_session, tender, gem
     assert len(result) == 2
     rows = db_session.scalars(select(Condition).order_by(Condition.id)).all()
     assert [(r.category, r.page, r.clause) for r in rows] == [
-        ("financial", 1, "4.1"),
-        ("legal", 2, None),
+        ("turnover", 1, "4.1"),
+        ("required_document", 2, None),
     ]
     assert rows[0].numeric_value == Decimal("50")
     assert rows[0].unit == "lakh"
@@ -195,3 +200,25 @@ def test_without_api_key_loads_sample_conditions(db_session, tender, monkeypatch
     rows = db_session.scalars(select(Condition).order_by(Condition.id)).all()
     assert [r.text for r in rows] == [c["text"] for c in sample["conditions"]]
     assert all(r.page is not None and r.clause for r in rows)
+
+
+def test_categories_match_the_agreed_list():
+    from app.ai.extractor import CATEGORIES, _RESPONSE_SCHEMA
+
+    assert CATEGORIES == [
+        "experience",
+        "turnover",
+        "liquid_assets",
+        "similar_contracts",
+        "required_document",
+        "tender_security",
+        "other",
+    ]
+    item = _RESPONSE_SCHEMA["properties"]["conditions"]["items"]
+    assert item["properties"]["category"]["enum"] == CATEGORIES
+
+
+def test_sample_conditions_use_every_numeric_category():
+    categories = {c.category for c in load_sample_conditions()}
+
+    assert {"experience", "turnover", "liquid_assets", "similar_contracts", "tender_security"} <= categories

@@ -1,7 +1,7 @@
 {
   "conditions": [
     {
-      "category": "legal",
+      "category": "required_document",
       "text": "The bidder must hold a valid trade licence, renewed for the current financial year.",
       "page": 3,
       "clause": "4.1(a)",
@@ -9,7 +9,7 @@
       "unit": null
     },
     {
-      "category": "legal",
+      "category": "required_document",
       "text": "The bidder must have a valid tax identification number and VAT registration certificate.",
       "page": 3,
       "clause": "4.1(b)",
@@ -25,7 +25,7 @@
       "unit": "years"
     },
     {
-      "category": "experience",
+      "category": "similar_contracts",
       "text": "The bidder must have successfully completed at least 2 works of similar nature, each valued at not less than 150 lakh, within the last 5 years.",
       "page": 4,
       "clause": "4.2(b)",
@@ -33,7 +33,7 @@
       "unit": "lakh"
     },
     {
-      "category": "financial",
+      "category": "turnover",
       "text": "The bidder's average annual construction turnover over the last 3 years must be at least 300 lakh.",
       "page": 5,
       "clause": "4.3(a)",
@@ -41,7 +41,7 @@
       "unit": "lakh"
     },
     {
-      "category": "financial",
+      "category": "liquid_assets",
       "text": "The bidder must show liquid assets or available credit facilities of at least 75 lakh.",
       "page": 5,
       "clause": "4.3(b)",
@@ -49,7 +49,7 @@
       "unit": "lakh"
     },
     {
-      "category": "financial",
+      "category": "tender_security",
       "text": "The tender must be accompanied by a tender security of 6 lakh in the form of a bank guarantee or pay order.",
       "page": 6,
       "clause": "5.1",
@@ -57,7 +57,7 @@
       "unit": "lakh"
     },
     {
-      "category": "technical",
+      "category": "other",
       "text": "The bidder must own or have confirmed access to at least 2 excavators and 1 concrete mixer plant.",
       "page": 7,
       "clause": "4.4(a)",
@@ -65,7 +65,7 @@
       "unit": "excavators"
     },
     {
-      "category": "technical",
+      "category": "other",
       "text": "The bidder must propose a project manager who is a graduate civil engineer with at least 10 years of experience.",
       "page": 7,
       "clause": "4.4(b)",
@@ -73,7 +73,7 @@
       "unit": "years"
     },
     {
-      "category": "document",
+      "category": "required_document",
       "text": "The bidder must submit audited financial statements for the last 3 years.",
       "page": 8,
       "clause": "6.2(c)",

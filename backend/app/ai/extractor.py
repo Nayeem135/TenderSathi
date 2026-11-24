@@ -28,8 +28,19 @@ SAMPLE_CONDITIONS_PATH = Path(__file__).with_name("sample_conditions.json")
 # Roughly 3k tokens of tender text per request.
 MAX_SECTION_CHARS = 12_000
 
-Category = Literal["financial", "experience", "technical", "legal", "document", "other"]
-_CATEGORIES = list(Category.__args__)
+# The matcher decides turnover, liquid_assets, similar_contracts and
+# experience (in years) with arithmetic, so those four must be kept apart
+# from everything else.
+Category = Literal[
+    "experience",
+    "turnover",
+    "liquid_assets",
+    "similar_contracts",
+    "required_document",
+    "tender_security",
+    "other",
+]
+CATEGORIES: list[str] = list(Category.__args__)
 
 _SYSTEM_INSTRUCTION = """\
 You extract bidder conditions from tender documents.
@@ -37,10 +48,18 @@ You extract bidder conditions from tender documents.
 The user message is a section of a tender. Each page starts with a marker
 line like [Page 12]. Return every condition a bidder must satisfy or every
 document a bidder must submit. For each condition give:
-- category: financial (turnover, liquid assets, securities, fees),
-  experience (past works, years in business), technical (equipment, staff,
-  capacity), legal (licences, registration, tax, declarations),
-  document (papers to submit), or other.
+- category, exactly one of:
+  experience: how many years the firm itself has worked in the field.
+    Experience required of staff (an engineer, a project manager) is other.
+  turnover: annual or average annual turnover.
+  liquid_assets: liquid assets, available credit facilities, working capital.
+  similar_contracts: number or value of similar works the firm has completed.
+  required_document: a licence, registration, certificate, statement or
+    declaration the bidder must hold or submit (trade licence, TIN, VAT,
+    audited accounts).
+  tender_security: the bid or tender security, earnest money, or bank
+    guarantee submitted with the bid.
+  other: anything else, such as equipment, key personnel or work methods.
 - text: the condition, quoted or closely paraphrased from the tender.
 - page: the number from the [Page N] marker the condition appears under.
 - clause: the clause or section number if one is shown (e.g. "4.1(b)"), else null.
@@ -61,7 +80,7 @@ _RESPONSE_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "enum": _CATEGORIES},
+                    "category": {"type": "string", "enum": CATEGORIES},
                     "text": {"type": "string"},
                     "page": {"type": "integer"},
                     "clause": {"type": ["string", "null"]},
@@ -78,6 +97,10 @@ _RESPONSE_SCHEMA = {
 
 class ExtractionError(Exception):
     """Gemini could not be reached or its reply was not usable."""
+
+
+class NoTextError(ExtractionError):
+    """The PDF has no text to extract from, usually because it is scanned."""
 
 
 class ExtractedCondition(BaseModel):
@@ -182,7 +205,7 @@ def _extract_section(section: Section) -> list[ExtractedCondition]:
 def extract_from_pages(pages: list[PageText]) -> list[ExtractedCondition]:
     sections = split_into_sections(pages)
     if not sections:
-        raise ExtractionError("The PDF has no extractable text (it may be scanned)")
+        raise NoTextError("The PDF has no extractable text (it may be scanned)")
     return [c for section in sections for c in _extract_section(section)]
 
 
