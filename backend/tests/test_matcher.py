@@ -14,16 +14,17 @@ from app.ai.matcher import (
     ContractData,
     ProfileData,
     evaluate,
+    load_profile,
     match_tender,
 )
 from app.core.config import settings
-from app.models import Condition, EligibilityResult, Firm, Tender
+from app.models import CompanyProfile, Condition, EligibilityResult, Firm, PastContract, Tender
 
 LAKH = Decimal(100_000)
 TODAY = date(2026, 11, 15)
 
 
-def cond(text, value=None, unit=None, category="financial"):
+def cond(text, value=None, unit=None, category="other"):
     return Condition(
         category=category,
         text=text,
@@ -110,6 +111,31 @@ def test_turnover_in_crore_is_converted():
     assert one(condition, profile).status == MET
 
 
+@pytest.mark.parametrize(
+    "lakh, expected",
+    [(350, MET), (300, MET), (299, NOT_MET)],  # exactly the threshold is enough
+)
+def test_turnover_single_figure_from_the_company_profile(lakh, expected, llm):
+    outcome = one(TURNOVER, ProfileData(annual_turnover=lakh * LAKH))
+
+    assert outcome.status == expected
+    assert "single figure" in outcome.reason
+    assert llm.prompts == []
+
+
+def test_turnover_figures_per_year_take_precedence_over_the_single_figure():
+    profile = ProfileData(
+        annual_turnovers={2023: 100 * LAKH, 2024: 100 * LAKH, 2025: 100 * LAKH},
+        annual_turnover=900 * LAKH,
+    )
+
+    assert one(TURNOVER, profile).status == NOT_MET
+
+
+def test_turnover_with_no_figure_at_all_needs_review():
+    assert one(TURNOVER, ProfileData()).status == NEEDS_REVIEW
+
+
 # --- liquid assets ------------------------------------------------------------
 
 LIQUID = cond("Liquid assets or available credit facilities of at least 75 lakh.", 75, "lakh")
@@ -138,7 +164,7 @@ def test_years_of_experience(llm, years, expected):
 def test_staff_experience_is_not_treated_as_firm_experience(llm):
     condition = cond(
         "The project manager must be a civil engineer with at least 10 years of experience.",
-        10, "years", "technical",
+        10, "years", "other",
     )  # fmt: skip
 
     one(condition, ProfileData(years_of_experience=20))
@@ -198,9 +224,9 @@ def test_contract_count_as_the_numeric_value():
 
 # --- text conditions ----------------------------------------------------------
 
-LICENCE = cond("The bidder must hold a valid trade licence.", category="legal")
-TAX = cond("The bidder must have a valid tax identification number.", category="legal")
-ISO = cond("The bidder must be ISO 9001 certified.", category="technical")
+LICENCE = cond("The bidder must hold a valid trade licence.", category="required_document")
+TAX = cond("The bidder must have a valid tax identification number.", category="required_document")
+ISO = cond("The bidder must be ISO 9001 certified.", category="other")
 
 
 def test_text_conditions_go_to_llm_with_profile_data(llm):
@@ -280,8 +306,8 @@ def tender(db_session):
     tender.conditions = [
         cond(LIQUID.text, 75, "lakh"),
         cond(YEARS.text, 5, "years", "experience"),
-        cond(LICENCE.text, category="legal"),
-        cond(ISO.text, category="technical"),
+        cond(LICENCE.text, category="required_document"),
+        cond(ISO.text, category="other"),
     ]
     db_session.add(tender)
     db_session.commit()
@@ -310,9 +336,84 @@ def test_match_tender_rerun_replaces_results(db_session, tender):
     assert results[0].status == NOT_MET
 
 
-def test_match_tender_without_profile_says_loader_is_not_connected(db_session, tender):
-    with pytest.raises(NotImplementedError, match="CompanyProfile"):
-        match_tender(db_session, tender)
+# --- reading the firm's saved profile -----------------------------------------
+
+
+def save_profile(db_session, firm_id, **columns):
+    db_session.add(CompanyProfile(firm_id=firm_id, **columns))
+    db_session.commit()
+
+
+def save_contract(db_session, firm_id, title, lakh, year, **columns):
+    db_session.add(PastContract(firm_id=firm_id, title=title, value=lakh * LAKH, year=year, **columns))
+    db_session.commit()
+
+
+def test_load_profile_maps_the_saved_profile(db_session, tender):
+    save_profile(
+        db_session,
+        tender.firm_id,
+        business_type="Construction",
+        trade_licence_no="TL-2026-0042",
+        tin="  ",  # blank: left out of the details
+        annual_turnover=350 * LAKH,
+        liquid_assets=90 * LAKH,
+        years_of_experience=8,
+    )
+    save_contract(db_session, tender.firm_id, "Old road", 100, 2019)
+    save_contract(db_session, tender.firm_id, "Bridge", 200, 2024, type="bridge", client="LGED")
+
+    profile = load_profile(db_session, tender.firm_id)
+
+    assert profile.annual_turnover == 350 * LAKH
+    assert profile.annual_turnovers == {}
+    assert profile.liquid_assets == 90 * LAKH
+    assert profile.years_of_experience == 8
+    assert profile.details == {
+        "business_type": "Construction",
+        "trade_licence_number": "TL-2026-0042",
+    }
+    # Newest first; only the year is stored, so 31 December is used.
+    assert [(c.title, c.completed_on) for c in profile.contracts] == [
+        ("Bridge", date(2024, 12, 31)),
+        ("Old road", date(2019, 12, 31)),
+    ]
+    assert profile.contracts[0].description == "type: bridge, client: LGED"
+
+
+def test_load_profile_only_reads_the_firms_own_data(db_session, tender):
+    other = Firm(name="Other")
+    db_session.add(other)
+    db_session.commit()
+    save_profile(db_session, other.id, liquid_assets=500 * LAKH)
+    save_contract(db_session, other.id, "Not ours", 900, 2025)
+
+    profile = load_profile(db_session, tender.firm_id)
+
+    assert profile == ProfileData()
+
+
+def test_match_tender_uses_the_saved_profile_when_none_is_given(db_session, tender, llm):
+    save_profile(db_session, tender.firm_id, liquid_assets=80 * LAKH, years_of_experience=2)
+
+    summary = match_tender(db_session, tender, today=TODAY)
+
+    assert [c.eligibility_results[0].status for c in tender.conditions[:2]] == [MET, NOT_MET]
+    assert summary.total == len(tender.conditions)
+
+
+def test_match_tender_without_a_saved_profile_needs_review(db_session, tender, llm):
+    summary = match_tender(db_session, tender, today=TODAY)
+
+    assert summary.needs_review == len(tender.conditions)
+
+
+def test_profile_details_are_sent_to_the_llm(db_session, tender, llm):
+    save_profile(db_session, tender.firm_id, trade_licence_no="TL-1")
+
+    match_tender(db_session, tender, today=TODAY)
+
+    assert llm.prompts[0]["company_profile"]["details"] == {"trade_licence_number": "TL-1"}
 
 
 # --- the sample conditions used by the offline demo ---------------------------
@@ -332,3 +433,43 @@ def test_sample_conditions_route_as_expected(llm):
     assert any("turnover" in t for t in numeric)
     assert any("liquid assets" in t for t in numeric)
     assert not any("tender security" in t for t in numeric)
+
+
+# --- routing by category ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "category, text, value, unit, expected_reason",
+    [
+        ("turnover", "Minimum yearly sales of 300 lakh.", 300, "lakh", "annual turnover"),
+        ("liquid_assets", "Cash in hand of 75 lakh.", 75, "lakh", "Liquid assets"),
+        ("similar_contracts", "At least 2 works of 150 lakh each.", 150, "lakh", "Required: 2 contracts"),
+        ("experience", "At least 5 years in the trade.", 5, "years", "years of experience"),
+    ],
+)
+def test_numeric_categories_use_arithmetic_even_without_keywords(
+    category, text, value, unit, expected_reason, llm
+):
+    profile = ProfileData(
+        annual_turnover=400 * LAKH, liquid_assets=80 * LAKH, years_of_experience=6
+    )
+
+    outcome = one(cond(text, value, unit, category), profile)
+
+    assert expected_reason in outcome.reason
+    assert llm.prompts == []
+
+
+@pytest.mark.parametrize("category", ["tender_security", "required_document", "other"])
+def test_other_categories_with_a_number_go_to_the_llm(category, llm):
+    condition = cond("A tender security of 6 lakh must be submitted.", 6, "lakh", category)
+
+    one(condition, ProfileData(liquid_assets=900 * LAKH))
+
+    assert len(llm.prompts) == 1
+
+
+def test_experience_category_without_years_goes_to_the_llm(llm):
+    one(cond("Experience in river works.", 3, "projects", "experience"), ProfileData())
+
+    assert len(llm.prompts) == 1

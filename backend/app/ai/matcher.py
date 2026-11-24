@@ -12,21 +12,24 @@ the LLM. Everything else goes to Gemini together with the profile; anything
 it is unsure about, or cannot be asked about, is marked needs_review.
 
 The matcher works on ProfileData, a plain snapshot of the firm. load_profile()
-is the one place that reads the CompanyProfile and PastContract tables.
+is the one place that reads the CompanyProfile and PastContract tables;
+match_tender() calls it when no profile is passed in.
 """
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, computed_field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai import gemini
-from app.models import Condition, EligibilityResult, Tender
+from app.models import CompanyProfile, Condition, EligibilityResult, PastContract, Tender
 
 MET = "met"
 NOT_MET = "not_met"
@@ -51,7 +54,12 @@ class ContractData:
 class ProfileData:
     """What the matcher knows about a firm. Money is in base currency units."""
 
-    annual_turnovers: dict[int, Decimal] = field(default_factory=dict)  # year -> turnover
+    # Turnover per year (year -> amount), when it is known year by year. The
+    # turnover check averages the years a condition asks about.
+    annual_turnovers: dict[int, Decimal] = field(default_factory=dict)
+    # A single annual turnover figure, which is what CompanyProfile stores.
+    # Used when annual_turnovers is empty, as the firm's average annual turnover.
+    annual_turnover: Decimal | None = None
     liquid_assets: Decimal | None = None
     years_of_experience: int | None = None
     contracts: tuple[ContractData, ...] = ()
@@ -59,15 +67,59 @@ class ProfileData:
     details: dict[str, str] = field(default_factory=dict)
 
 
-def load_profile(db: Session, firm_id: int) -> ProfileData:
-    """Build ProfileData from the CompanyProfile and PastContract tables.
+# CompanyProfile columns passed to the LLM as free-text facts, with the
+# label the LLM sees.
+_PROFILE_DETAILS = {
+    "business_type": "business_type",
+    "trade_licence_no": "trade_licence_number",
+    "tin": "tax_identification_number",
+    "vat_reg": "vat_registration",
+}
 
-    Not connected yet: those models are not in the codebase. Once they are,
-    query them here and map their columns onto ProfileData.
+
+def load_profile(db: Session, firm_id: int) -> ProfileData:
+    """Build ProfileData from the firm's CompanyProfile and PastContract rows.
+
+    A firm that has not filled in its profile gets an empty ProfileData, so
+    every check that needs the missing data comes out needs_review.
+
+    PastContract stores only the year a contract was completed, so it is
+    taken as completed on 31 December of that year: a contract from the
+    first year of a "last N years" window counts.
     """
-    raise NotImplementedError(
-        "load_profile() is not connected to the CompanyProfile and PastContract "
-        "tables yet; pass a ProfileData to match_tender() instead"
+    profile = db.scalar(select(CompanyProfile).where(CompanyProfile.firm_id == firm_id))
+    contracts = db.scalars(
+        select(PastContract)
+        .where(PastContract.firm_id == firm_id)
+        .order_by(PastContract.year.desc(), PastContract.id)
+    ).all()
+
+    contract_data = tuple(
+        ContractData(
+            title=c.title,
+            value=c.value,
+            completed_on=date(c.year, 12, 31),
+            description=", ".join(
+                part
+                for part in (c.type and f"type: {c.type}", c.client and f"client: {c.client}")
+                if part
+            ),
+        )
+        for c in contracts
+    )
+    if profile is None:
+        return ProfileData(contracts=contract_data)
+
+    return ProfileData(
+        annual_turnover=profile.annual_turnover,
+        liquid_assets=profile.liquid_assets,
+        years_of_experience=profile.years_of_experience,
+        contracts=contract_data,
+        details={
+            label: value
+            for column, label in _PROFILE_DETAILS.items()
+            if (value := (getattr(profile, column) or "").strip())
+        },
     )
 
 
@@ -85,9 +137,25 @@ class MatchSummary(BaseModel):
     not_met: int = 0
     needs_review: int = 0
 
+    # computed_field: worked out from the counts, and included when the
+    # summary is sent as JSON.
+    @computed_field
     @property
     def total(self) -> int:
         return self.met + self.not_met + self.needs_review
+
+    @computed_field
+    @property
+    def headline(self) -> str:
+        """For example "9 of 11 conditions met"."""
+        return f"{self.met} of {self.total} condition{'s' if self.total != 1 else ''} met"
+
+    @classmethod
+    def count(cls, statuses: Iterable[str]) -> "MatchSummary":
+        summary = cls()
+        for status in statuses:
+            setattr(summary, status, getattr(summary, status) + 1)
+        return summary
 
 
 # --- numeric checks (plain Python, no LLM) ------------------------------------
@@ -142,7 +210,16 @@ def _years_before(day: date, years: int) -> date:
 def _check_turnover(condition: Condition, profile: ProfileData, today: date) -> Outcome:
     required = condition.numeric_value * _multiplier(condition.unit)
     if not profile.annual_turnovers:
-        return Outcome(NEEDS_REVIEW, "The profile has no annual turnover figures.")
+        if profile.annual_turnover is None:
+            return Outcome(NEEDS_REVIEW, "The profile has no annual turnover figure.")
+        # One figure, not one per year: compare it directly and say so.
+        met = profile.annual_turnover >= required
+        return Outcome(
+            MET if met else NOT_MET,
+            f"The profile's annual turnover is {_fmt(profile.annual_turnover, condition.unit)} "
+            f"(a single figure, taken as the average), "
+            f"{'which meets' if met else 'below'} the required {_fmt(required, condition.unit)}.",
+        )
 
     window = _LAST_N_YEARS.search(condition.text.lower())
     years_wanted = _to_int(window.group(1)) if window else len(profile.annual_turnovers)
@@ -239,19 +316,33 @@ def _is_money_threshold(condition: Condition) -> bool:
 
 
 def _numeric_check(condition: Condition):
-    """The arithmetic check for this condition, or None if it needs the LLM."""
+    """The arithmetic check for this condition, or None if it needs the LLM.
+
+    The category chosen by the extractor decides first. The wording is
+    checked as well, so a numeric condition the extractor filed under the
+    wrong category still gets arithmetic rather than the LLM.
+    """
     if condition.numeric_value is None:
         return None
+    category = condition.category
     text = condition.text.lower()
-    if "turnover" in text and not _is_years(condition.unit):
+    in_years = _is_years(condition.unit)
+
+    if (category == "turnover" or "turnover" in text) and not in_years:
         return _check_turnover
-    if re.search(r"liquid asset|credit facilit|line of credit|working capital", text):
-        if not _is_years(condition.unit):
+    if category == "liquid_assets" or re.search(
+        r"liquid asset|credit facilit|line of credit|working capital", text
+    ):
+        if not in_years:
             return _check_liquid_assets
-    if re.search(_CONTRACT_NOUN, text) and re.search(r"similar|completed|executed", text):
-        if not _is_years(condition.unit):
+    if category == "similar_contracts" or (
+        re.search(_CONTRACT_NOUN, text) and re.search(r"similar|completed|executed", text)
+    ):
+        if not in_years:
             return _check_contracts
-    if condition.category == "experience" and _is_years(condition.unit):
+    # Only the firm's own experience: staff experience (category "other")
+    # is a text condition, even when it is given in years.
+    if category == "experience" and in_years:
         return _check_years_of_experience
     return None
 
@@ -306,6 +397,7 @@ class _VerdictReply(BaseModel):
 def _profile_for_llm(profile: ProfileData) -> dict:
     return {
         "annual_turnovers": {str(y): str(v) for y, v in sorted(profile.annual_turnovers.items())},
+        "annual_turnover": str(profile.annual_turnover) if profile.annual_turnover is not None else None,
         "liquid_assets": str(profile.liquid_assets) if profile.liquid_assets is not None else None,
         "years_of_experience": profile.years_of_experience,
         "past_contracts": [
@@ -401,11 +493,10 @@ def match_tender(
         profile = load_profile(db, tender.firm_id)
 
     conditions = list(tender.conditions)
-    summary = MatchSummary()
-    for condition, outcome in zip(conditions, evaluate(conditions, profile, today)):
+    outcomes = evaluate(conditions, profile, today)
+    for condition, outcome in zip(conditions, outcomes):
         condition.eligibility_results = [
             EligibilityResult(status=outcome.status, reason=outcome.reason)
         ]
-        setattr(summary, outcome.status, getattr(summary, outcome.status) + 1)
     db.commit()
-    return summary
+    return MatchSummary.count(outcome.status for outcome in outcomes)
